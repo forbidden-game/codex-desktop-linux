@@ -8,6 +8,12 @@ use std::{
 
 const PACKAGE_NAME: &str = "codex-desktop";
 const INSTALLED_UPDATER_BINARY: &str = "/usr/bin/codex-update-manager";
+const APT_CANDIDATES: &[&str] = &["/usr/bin/apt", "/bin/apt"];
+const DNF_CANDIDATES: &[&str] = &["/usr/bin/dnf", "/bin/dnf", "/usr/bin/dnf5", "/bin/dnf5"];
+const DPKG_CANDIDATES: &[&str] = &["/usr/bin/dpkg", "/bin/dpkg"];
+const DPKG_DEB_CANDIDATES: &[&str] = &["/usr/bin/dpkg-deb", "/bin/dpkg-deb"];
+const DPKG_QUERY_CANDIDATES: &[&str] = &["/usr/bin/dpkg-query", "/bin/dpkg-query"];
+const RPM_CANDIDATES: &[&str] = &["/usr/bin/rpm", "/bin/rpm"];
 
 /// The native package format in use on the current system.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,9 +26,9 @@ impl PackageKind {
     /// Detect the package manager available on the running system.
     /// Falls back to [`PackageKind::Deb`] when neither `dpkg` nor `rpm` is found.
     pub fn detect() -> Self {
-        if command_exists("dpkg") {
+        if program_exists(DPKG_CANDIDATES, "dpkg") {
             Self::Deb
-        } else if command_exists("rpm") {
+        } else if program_exists(RPM_CANDIDATES, "rpm") {
             Self::Rpm
         } else {
             Self::Deb
@@ -46,13 +52,21 @@ pub fn installed_package_version() -> String {
     }
 }
 
+/// Returns whether the primary native package still appears to be installed.
+pub fn is_primary_package_installed() -> bool {
+    installed_package_version() != "unknown"
+}
+
 fn installed_deb_version() -> String {
-    installed_version_from_command("dpkg-query", &["-W", "-f=${Version}", PACKAGE_NAME])
+    installed_version_from_command(
+        &program_path(DPKG_QUERY_CANDIDATES, "dpkg-query"),
+        &["-W", "-f=${Version}", PACKAGE_NAME],
+    )
 }
 
 fn installed_rpm_version() -> String {
     installed_version_from_command(
-        "rpm",
+        &program_path(RPM_CANDIDATES, "rpm"),
         &["-q", "--queryformat", "%{VERSION}-%{RELEASE}", PACKAGE_NAME],
     )
 }
@@ -66,7 +80,7 @@ pub fn install_deb(path: &Path) -> Result<()> {
     );
     ensure_upgrade_path(path)?;
 
-    if command_exists("apt") {
+    if program_exists(APT_CANDIDATES, "apt") {
         let mut command = apt_install_command(path)?;
         run_install(&mut command).context("apt install failed")?;
         return Ok(());
@@ -80,7 +94,7 @@ pub fn install_deb(path: &Path) -> Result<()> {
 pub fn install_rpm(path: &Path) -> Result<()> {
     anyhow::ensure!(path.exists(), "RPM package not found: {}", path.display());
 
-    if command_exists("dnf") {
+    if program_exists(DNF_CANDIDATES, "dnf") || program_exists(DNF_CANDIDATES, "dnf5") {
         let mut command = dnf_install_command(path)?;
         run_install(&mut command).context("dnf install failed")?;
         return Ok(());
@@ -117,7 +131,7 @@ fn run_install(command: &mut Command) -> Result<()> {
     Ok(())
 }
 
-fn installed_version_from_command(program: &str, args: &[&str]) -> String {
+fn installed_version_from_command(program: &Path, args: &[&str]) -> String {
     match Command::new(program).args(args).output() {
         Ok(output) if output.status.success() => parse_installed_version(output.stdout),
         _ => "unknown".to_string(),
@@ -148,26 +162,30 @@ fn ensure_upgrade_path(path: &Path) -> Result<()> {
 }
 
 fn apt_install_command(path: &Path) -> Result<Command> {
-    install_command_in_parent("apt", path)
+    install_command_in_parent(&program_path(APT_CANDIDATES, "apt"), path)
 }
 
 fn dpkg_install_command(path: &Path) -> Command {
-    let mut command = Command::new("dpkg");
+    let mut command = Command::new(program_path(DPKG_CANDIDATES, "dpkg"));
     command.arg("-i").arg(path.as_os_str());
     command
 }
 
 fn dnf_install_command(path: &Path) -> Result<Command> {
-    install_command_in_parent("dnf", path)
+    install_command_in_parent(&program_path(DNF_CANDIDATES, "dnf"), path)
 }
 
-fn install_command_in_parent(program: &str, path: &Path) -> Result<Command> {
+fn install_command_in_parent(program: &Path, path: &Path) -> Result<Command> {
+    let program_name = program
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("package manager");
     let parent = path
         .parent()
-        .with_context(|| format!("{program} package path has no parent directory"))?;
+        .with_context(|| format!("{program_name} package path has no parent directory"))?;
     let file_name = path
         .file_name()
-        .with_context(|| format!("{program} package path has no file name"))?
+        .with_context(|| format!("{program_name} package path has no file name"))?
         .to_string_lossy()
         .into_owned();
 
@@ -181,7 +199,7 @@ fn install_command_in_parent(program: &str, path: &Path) -> Result<Command> {
 }
 
 fn rpm_install_command(path: &Path) -> Command {
-    let mut command = Command::new("rpm");
+    let mut command = Command::new(program_path(RPM_CANDIDATES, "rpm"));
     command.args(["-Uvh"]).arg(path.as_os_str());
     command
 }
@@ -196,7 +214,7 @@ fn updater_binary_for_privileged_install(current_exe: &Path) -> PathBuf {
 }
 
 fn deb_package_version(path: &Path) -> Result<String> {
-    let output = Command::new("dpkg-deb")
+    let output = Command::new(program_path(DPKG_DEB_CANDIDATES, "dpkg-deb"))
         .arg("-f")
         .arg(path)
         .arg("Version")
@@ -222,11 +240,23 @@ fn deb_package_version(path: &Path) -> Result<String> {
 }
 
 fn is_version_newer(candidate: &str, installed: &str) -> Result<bool> {
-    let status = Command::new("dpkg")
+    let status = Command::new(program_path(DPKG_CANDIDATES, "dpkg"))
         .args(["--compare-versions", candidate, "gt", installed])
         .status()
         .context("Failed to compare Debian package versions")?;
     Ok(status.success())
+}
+
+fn program_exists(candidates: &[&str], fallback: &str) -> bool {
+    candidates.iter().any(|path| Path::new(path).is_file()) || command_exists(fallback)
+}
+
+fn program_path(candidates: &[&str], fallback: &str) -> PathBuf {
+    candidates
+        .iter()
+        .map(PathBuf::from)
+        .find(|path| path.is_file())
+        .unwrap_or_else(|| PathBuf::from(fallback))
 }
 
 fn command_exists(name: &str) -> bool {
@@ -291,13 +321,18 @@ mod tests {
     fn prefers_installed_updater_path_for_pkexec() {
         let selected =
             updater_binary_for_privileged_install(Path::new("/tmp/codex-update-manager-old"));
-        assert_eq!(selected, PathBuf::from("/usr/bin/codex-update-manager"));
+        let expected = if Path::new("/usr/bin/codex-update-manager").is_file() {
+            PathBuf::from("/usr/bin/codex-update-manager")
+        } else {
+            PathBuf::from("/tmp/codex-update-manager-old")
+        };
+        assert_eq!(selected, expected);
     }
 
     #[test]
     fn builds_local_apt_install_command() -> Result<()> {
         let command = apt_install_command(Path::new("/tmp/build/codex.deb"))?;
-        assert_eq!(command.get_program().to_string_lossy(), "apt");
+        assert!(command.get_program().to_string_lossy().ends_with("apt"));
         assert_eq!(
             command
                 .get_args()
@@ -311,7 +346,8 @@ mod tests {
     #[test]
     fn builds_local_dnf_install_command() -> Result<()> {
         let command = dnf_install_command(Path::new("/tmp/build/codex.rpm"))?;
-        assert_eq!(command.get_program().to_string_lossy(), "dnf");
+        let program = command.get_program().to_string_lossy();
+        assert!(program.ends_with("dnf") || program.ends_with("dnf5"));
         assert_eq!(
             command
                 .get_args()

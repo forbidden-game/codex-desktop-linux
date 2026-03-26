@@ -74,12 +74,34 @@ fn mark_failed_and_persist(
     persist_state(paths, state)
 }
 
+fn packaged_runtime_removed(config: &RuntimeConfig) -> bool {
+    config.builder_bundle_root == Path::new("/opt/codex-desktop/update-builder")
+        && !config.app_executable_path.exists()
+        && !install::is_primary_package_installed()
+}
+
+fn summarize_command_output(output: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(output);
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+
+    let mut lines = text.lines().rev().take(3).collect::<Vec<_>>();
+    lines.reverse();
+    Some(lines.join(" | "))
+}
+
 async fn run_daemon(
     config: &RuntimeConfig,
     state: &mut PersistedState,
     paths: &RuntimePaths,
 ) -> Result<()> {
     sync_and_persist(config, state, paths)?;
+    if packaged_runtime_removed(config) {
+        info!("packaged app files are gone; stopping updater daemon");
+        return Ok(());
+    }
     info!("daemon initialized");
 
     time::sleep(Duration::from_secs(config.initial_check_delay_seconds)).await;
@@ -96,6 +118,11 @@ async fn run_daemon(
     check_interval.tick().await;
     reconcile_interval.tick().await;
     loop {
+        if packaged_runtime_removed(config) {
+            info!("packaged app files are gone; stopping updater daemon");
+            break;
+        }
+
         tokio::select! {
             _ = check_interval.tick() => {
                 if let Err(error) = run_check_cycle(config, state, paths).await {
@@ -246,19 +273,6 @@ async fn reconcile_pending_install(
 ) -> Result<()> {
     sync_runtime_state(config, state);
 
-    if state.status == UpdateStatus::Failed
-        && state.candidate_version.is_some()
-        && state
-            .artifact_paths
-            .package_path
-            .as_ref()
-            .is_some_and(|path| path.exists())
-    {
-        state.status = UpdateStatus::ReadyToInstall;
-        state.error_message = None;
-        persist_state(paths, state)?;
-    }
-
     match state.status {
         UpdateStatus::ReadyToInstall | UpdateStatus::WaitingForAppExit => {
             let Some(package_path) = state.artifact_paths.package_path.clone() else {
@@ -345,9 +359,10 @@ async fn trigger_install(
     );
 
     let current_exe = std::env::current_exe().context("Failed to resolve updater binary path")?;
-    let status = install::pkexec_command(&current_exe, package_path)
-        .status()
+    let output = install::pkexec_command(&current_exe, package_path)
+        .output()
         .context("Failed to launch pkexec for update installation")?;
+    let status = output.status;
 
     if status.success() {
         state.status = UpdateStatus::Installed;
@@ -363,7 +378,22 @@ async fn trigger_install(
         return Ok(());
     }
 
-    let error = anyhow::anyhow!("Privileged install exited with status {status}");
+    let stdout = summarize_command_output(&output.stdout);
+    let stderr = summarize_command_output(&output.stderr);
+    error!(
+        status = %status,
+        stdout = stdout.as_deref().unwrap_or(""),
+        stderr = stderr.as_deref().unwrap_or(""),
+        "privileged install failed"
+    );
+
+    let mut message = format!("Privileged install exited with status {status}");
+    if let Some(stderr) = stderr {
+        message.push_str(": ");
+        message.push_str(&stderr);
+    }
+
+    let error = anyhow::anyhow!(message);
     mark_failed_and_persist(state, paths, error.to_string())?;
     let _ = notify::send(
         "Codex update failed",
@@ -394,7 +424,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn failed_state_with_existing_deb_returns_to_ready_to_install() -> Result<()> {
+    async fn failed_state_with_existing_deb_stays_failed() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let paths = RuntimePaths {
             config_file: temp.path().join("config/config.toml"),
@@ -433,8 +463,8 @@ mod tests {
 
         reconcile_pending_install(&config, &mut state, &paths).await?;
 
-        assert_eq!(state.status, UpdateStatus::ReadyToInstall);
-        assert_eq!(state.error_message, None);
+        assert_eq!(state.status, UpdateStatus::Failed);
+        assert_eq!(state.error_message.as_deref(), Some("previous failure"));
         Ok(())
     }
 
