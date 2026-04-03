@@ -50,6 +50,7 @@ stage_common_package_files() {
     rm -rf "$app_root"
     cp -aT "$APP_DIR" "$app_root"
     mkdir -p "$app_root/.codex-linux"
+    cp "$ICON_SOURCE" "$app_root/.codex-linux/$PACKAGE_NAME.png"
     cp "$DESKTOP_TEMPLATE" "$root/usr/share/applications/$PACKAGE_NAME.desktop"
     cp "$ICON_SOURCE" "$root/usr/share/icons/hicolor/256x256/apps/$PACKAGE_NAME.png"
     cp "$UPDATER_BINARY_SOURCE" "$root/usr/bin/codex-update-manager"

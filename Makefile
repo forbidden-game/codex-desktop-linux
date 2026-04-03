@@ -10,7 +10,7 @@ PACMAN_GLOB := $(CURDIR)/dist/$(PACKAGE_NAME)-[0-9]*.pkg.tar.*
 
 .DEFAULT_GOAL := help
 
-.PHONY: help check test build-updater build-app deb rpm pacman package install clean-dist clean-state
+.PHONY: help check test build-updater build-app run-app deb rpm pacman package install service-enable service-status clean-dist clean-state
 
 help:
 	@printf '\nCodex Desktop Linux Make Targets\n\n'
@@ -18,11 +18,14 @@ help:
 	@printf '  %-18s %s\n' "make test" "Run updater test suite"
 	@printf '  %-18s %s\n' "make build-updater" "Build codex-update-manager in release mode"
 	@printf '  %-18s %s\n' "make build-app" "Run install.sh and regenerate codex-app/"
+	@printf '  %-18s %s\n' "make run-app" "Launch the local generated Electron app from codex-app/"
 	@printf '  %-18s %s\n' "make deb" "Build the Debian package into dist/"
 	@printf '  %-18s %s\n' "make rpm" "Build the RPM package into dist/ (Fedora)"
 	@printf '  %-18s %s\n' "make pacman" "Build the pacman package into dist/ (Arch)"
 	@printf '  %-18s %s\n' "make package" "Build native package (auto-detects deb, rpm, or pacman)"
 	@printf '  %-18s %s\n' "make install" "Install the latest generated native package"
+	@printf '  %-18s %s\n' "make service-enable" "Enable and start codex-update-manager.service for the current user"
+	@printf '  %-18s %s\n' "make service-status" "Show codex-update-manager.service status for the current user"
 	@printf '  %-18s %s\n' "make clean-dist" "Remove generated dist/ artifacts"
 	@printf '  %-18s %s\n' "make clean-state" "Remove updater runtime state from XDG directories"
 	@printf '\nVariables:\n\n'
@@ -33,10 +36,13 @@ help:
 	@printf '  %-18s %s\n' "PKG=/path/file.pkg.tar.zst" "Override the pacman package used by make install"
 	@printf '\nExamples:\n\n'
 	@printf '  %s\n' "make build-app DMG=/tmp/Codex.dmg"
+	@printf '  %s\n' "make run-app"
 	@printf '  %s\n' "make deb PACKAGE_VERSION=2026.03.24.220723+88f07cd3"
 	@printf '  %s\n' "make rpm PACKAGE_VERSION=2026.03.24.220723+88f07cd3"
 	@printf '  %s\n' "make pacman PACKAGE_VERSION=2026.03.24.220723+88f07cd3"
 	@printf '  %s\n\n' "make install"
+	@printf '  %s\n' "make install"
+	@printf '  %s\n\n' "make service-enable"
 
 check:
 	@echo "[make] Running cargo check"
@@ -53,6 +59,10 @@ build-updater:
 build-app:
 	@echo "[make] Regenerating codex-app from DMG"
 	./install.sh "$(or $(DMG),$(DEFAULT_DMG))"
+
+run-app:
+	@echo "[make] Launching local Electron app"
+	"$(APP_DIR)/start.sh"
 
 deb: build-updater
 	@echo "[make] Building Debian package"
@@ -105,6 +115,15 @@ install:
 	else \
 		echo "[make] No supported package manager found (dpkg, rpm, or pacman)." >&2; exit 1; \
 	fi
+
+service-enable:
+	@echo "[make] Enabling and starting codex-update-manager.service"
+	systemctl --user daemon-reload
+	systemctl --user enable --now codex-update-manager.service
+
+service-status:
+	@echo "[make] Showing codex-update-manager.service status"
+	systemctl --user status codex-update-manager.service --no-pager
 
 clean-dist:
 	@echo "[make] Removing dist/"

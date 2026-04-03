@@ -27,6 +27,19 @@ pub enum UpdateStatus {
     Failed,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+/// Status of the user-installed Codex CLI preflight check.
+pub enum CliStatus {
+    #[default]
+    Unknown,
+    Checking,
+    UpToDate,
+    UpdateRequired,
+    Updating,
+    Failed,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 /// Artifact paths tracked across update checks, rebuilds, and installation.
 pub struct ArtifactPaths {
@@ -53,6 +66,18 @@ pub struct PersistedState {
     pub error_message: Option<String>,
     pub notified_events: BTreeSet<String>,
     pub auto_install_on_app_exit: bool,
+    #[serde(default)]
+    pub cli_path: Option<PathBuf>,
+    #[serde(default)]
+    pub cli_installed_version: Option<String>,
+    #[serde(default)]
+    pub cli_latest_version: Option<String>,
+    #[serde(default)]
+    pub cli_status: CliStatus,
+    #[serde(default)]
+    pub cli_last_check_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub cli_error_message: Option<String>,
 }
 
 impl PersistedState {
@@ -70,6 +95,12 @@ impl PersistedState {
             error_message: None,
             notified_events: BTreeSet::new(),
             auto_install_on_app_exit,
+            cli_path: None,
+            cli_installed_version: None,
+            cli_latest_version: None,
+            cli_status: CliStatus::Unknown,
+            cli_last_check_at: None,
+            cli_error_message: None,
         }
     }
 
@@ -135,6 +166,35 @@ mod tests {
         );
         assert!(loaded.notified_events.contains("ready_to_install"));
         assert!(!loaded.auto_install_on_app_exit);
+        Ok(())
+    }
+
+    #[test]
+    fn loads_legacy_state_without_cli_fields() -> Result<()> {
+        let temp = tempdir()?;
+        let path = temp.path().join("state.json");
+        fs::write(
+            &path,
+            r#"{
+  "installed_version": "2026.03.24+deadbeef",
+  "candidate_version": null,
+  "status": "idle",
+  "last_check_at": null,
+  "last_successful_check_at": null,
+  "remote_headers_fingerprint": null,
+  "dmg_sha256": null,
+  "artifact_paths": {"dmg_path": null, "workspace_dir": null, "deb_path": null},
+  "error_message": null,
+  "notified_events": [],
+  "auto_install_on_app_exit": true
+}"#,
+        )?;
+
+        let loaded = PersistedState::load_or_default(&path, true)?;
+        assert_eq!(loaded.cli_status, CliStatus::Unknown);
+        assert_eq!(loaded.cli_installed_version, None);
+        assert_eq!(loaded.cli_latest_version, None);
+        assert_eq!(loaded.cli_error_message, None);
         Ok(())
     }
 

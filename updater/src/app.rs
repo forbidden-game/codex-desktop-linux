@@ -3,6 +3,7 @@
 use crate::{
     builder,
     cli::{Cli, Commands},
+    codex_cli,
     config::{RuntimeConfig, RuntimePaths},
     install, liveness, logging, notify,
     state::{PersistedState, UpdateStatus},
@@ -32,6 +33,10 @@ pub async fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Commands::Daemon => run_daemon(&config, &mut state, &paths).await,
         Commands::CheckNow => run_check_now(&config, &mut state, &paths).await,
+        Commands::CliPreflight {
+            cli_path,
+            print_path,
+        } => run_cli_preflight(&mut state, &paths, cli_path, print_path),
         Commands::Status { json } => run_status(state, json),
         Commands::InstallDeb { path } => install::install_deb(&path),
         Commands::InstallRpm { path } => install::install_rpm(&path),
@@ -99,6 +104,7 @@ async fn run_daemon(
     paths: &RuntimePaths,
 ) -> Result<()> {
     sync_and_persist(config, state, paths)?;
+    recover_interrupted_install(state, paths)?;
     if packaged_runtime_removed(config) {
         info!("packaged app files are gone; stopping updater daemon");
         return Ok(());
@@ -152,6 +158,7 @@ async fn run_check_now(
     paths: &RuntimePaths,
 ) -> Result<()> {
     sync_and_persist(config, state, paths)?;
+    recover_interrupted_install(state, paths)?;
     run_check_cycle(config, state, paths).await?;
     reconcile_pending_install(config, state, paths).await
 }
@@ -166,8 +173,30 @@ fn run_status(state: PersistedState, json: bool) -> Result<()> {
             "candidate_version: {}",
             state.candidate_version.as_deref().unwrap_or("none")
         );
+        println!("cli_status: {:?}", state.cli_status);
+        println!(
+            "cli_installed_version: {}",
+            state.cli_installed_version.as_deref().unwrap_or("unknown")
+        );
+        println!(
+            "cli_latest_version: {}",
+            state.cli_latest_version.as_deref().unwrap_or("unknown")
+        );
     }
 
+    Ok(())
+}
+
+fn run_cli_preflight(
+    state: &mut PersistedState,
+    paths: &RuntimePaths,
+    cli_path: Option<std::path::PathBuf>,
+    print_path: bool,
+) -> Result<()> {
+    let outcome = codex_cli::preflight(state, paths, cli_path)?;
+    if print_path {
+        println!("{}", outcome.cli_path.display());
+    }
     Ok(())
 }
 
@@ -273,6 +302,7 @@ async fn reconcile_pending_install(
     paths: &RuntimePaths,
 ) -> Result<()> {
     sync_runtime_state(config, state);
+    recover_interrupted_install(state, paths)?;
 
     match state.status {
         UpdateStatus::ReadyToInstall | UpdateStatus::WaitingForAppExit => {
@@ -316,6 +346,85 @@ async fn reconcile_pending_install(
     }
 
     Ok(())
+}
+
+fn recover_interrupted_install(state: &mut PersistedState, paths: &RuntimePaths) -> Result<()> {
+    if state.status != UpdateStatus::Installing {
+        return Ok(());
+    }
+
+    if state.candidate_version.as_deref().is_some_and(|candidate| {
+        installed_version_satisfies_candidate(&state.installed_version, candidate)
+    }) {
+        state.status = UpdateStatus::Installed;
+        state.candidate_version = None;
+        state.error_message = None;
+        state.notified_events.clear();
+        persist_state(paths, state)?;
+        info!("recovered interrupted install state because the candidate version is already installed");
+        return Ok(());
+    }
+
+    let Some(package_path) = state.artifact_paths.package_path.clone() else {
+        mark_failed_and_persist(
+            state,
+            paths,
+            "Previous install attempt was interrupted and no package artifact is recorded",
+        )?;
+        return Ok(());
+    };
+
+    if !package_path.exists() {
+        mark_failed_and_persist(
+            state,
+            paths,
+            format!(
+                "Previous install attempt was interrupted and the package artifact is missing: {}",
+                package_path.display()
+            ),
+        )?;
+        return Ok(());
+    }
+
+    state.status = UpdateStatus::ReadyToInstall;
+    state.error_message =
+        Some("Previous install attempt was interrupted before completion".to_string());
+    persist_state(paths, state)?;
+    info!(package = %package_path.display(), "recovered interrupted install state back to ready_to_install");
+    Ok(())
+}
+
+fn installed_version_satisfies_candidate(installed: &str, candidate: &str) -> bool {
+    if installed == "unknown" {
+        return false;
+    }
+
+    match compare_generated_versions(installed, candidate) {
+        Some(std::cmp::Ordering::Less) => false,
+        Some(_) => true,
+        None => installed == candidate,
+    }
+}
+
+fn compare_generated_versions(left: &str, right: &str) -> Option<std::cmp::Ordering> {
+    let left = parse_generated_version(left)?;
+    let right = parse_generated_version(right)?;
+    Some(left.cmp(&right))
+}
+
+fn parse_generated_version(version: &str) -> Option<Vec<u32>> {
+    let base = version
+        .split_once('+')
+        .map(|(prefix, _)| prefix)
+        .unwrap_or(version);
+    let mut parts = Vec::new();
+    for segment in base.split('.') {
+        parts.push(segment.parse::<u32>().ok()?);
+    }
+    if parts.len() != 4 {
+        return None;
+    }
+    Some(parts)
 }
 
 fn maybe_notify(
@@ -583,6 +692,92 @@ mod tests {
 
         assert_eq!(state.status, UpdateStatus::ReadyToInstall);
         assert_eq!(state.error_message, None);
+        Ok(())
+    }
+
+    #[test]
+    fn generated_versions_compare_by_timestamp_segments() {
+        assert_eq!(
+            compare_generated_versions("2026.04.01.035152", "2026.03.27.025604+1086e799"),
+            Some(std::cmp::Ordering::Greater)
+        );
+    }
+
+    #[test]
+    fn generated_version_comparison_rejects_non_generated_versions() {
+        assert_eq!(compare_generated_versions("0.34.1", "0.35.0"), None);
+    }
+
+    #[tokio::test]
+    async fn interrupted_install_becomes_installed_when_candidate_is_already_present() -> Result<()>
+    {
+        let temp = tempfile::tempdir()?;
+        let paths = RuntimePaths {
+            config_file: temp.path().join("config/config.toml"),
+            state_file: temp.path().join("state/state.json"),
+            log_file: temp.path().join("state/service.log"),
+            cache_dir: temp.path().join("cache"),
+            state_dir: temp.path().join("state"),
+            config_dir: temp.path().join("config"),
+        };
+        paths.ensure_dirs()?;
+
+        let package_path = temp.path().join("dist/codex.deb");
+        std::fs::create_dir_all(
+            package_path
+                .parent()
+                .expect("package path should have parent"),
+        )?;
+        std::fs::write(&package_path, b"deb")?;
+
+        let mut state = PersistedState::new(true);
+        state.status = UpdateStatus::Installing;
+        state.installed_version = "2026.04.01.035152".to_string();
+        state.candidate_version = Some("2026.03.27.025604+1086e799".to_string());
+        state.artifact_paths.package_path = Some(package_path);
+
+        recover_interrupted_install(&mut state, &paths)?;
+
+        assert_eq!(state.status, UpdateStatus::Installed);
+        assert_eq!(state.candidate_version, None);
+        assert_eq!(state.error_message, None);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn interrupted_install_returns_to_ready_when_package_still_exists() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let paths = RuntimePaths {
+            config_file: temp.path().join("config/config.toml"),
+            state_file: temp.path().join("state/state.json"),
+            log_file: temp.path().join("state/service.log"),
+            cache_dir: temp.path().join("cache"),
+            state_dir: temp.path().join("state"),
+            config_dir: temp.path().join("config"),
+        };
+        paths.ensure_dirs()?;
+
+        let package_path = temp.path().join("dist/codex.deb");
+        std::fs::create_dir_all(
+            package_path
+                .parent()
+                .expect("package path should have parent"),
+        )?;
+        std::fs::write(&package_path, b"deb")?;
+
+        let mut state = PersistedState::new(true);
+        state.status = UpdateStatus::Installing;
+        state.installed_version = "2026.03.24.120000".to_string();
+        state.candidate_version = Some("2026.03.27.025604+1086e799".to_string());
+        state.artifact_paths.package_path = Some(package_path);
+
+        recover_interrupted_install(&mut state, &paths)?;
+
+        assert_eq!(state.status, UpdateStatus::ReadyToInstall);
+        assert!(state
+            .error_message
+            .as_deref()
+            .is_some_and(|message| message.contains("interrupted")));
         Ok(())
     }
 

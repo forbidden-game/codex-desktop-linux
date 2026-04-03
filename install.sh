@@ -12,6 +12,7 @@ INSTALL_DIR="${CODEX_INSTALL_DIR:-$INSTALL_ROOT/codex-app}"
 ELECTRON_VERSION="40.0.0"
 WORK_DIR="$(mktemp -d)"
 ARCH="$(uname -m)"
+ICON_SOURCE="$SCRIPT_DIR/assets/codex.png"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -338,6 +339,10 @@ LOG_FILE="$LOG_DIR/launcher.log"
 APP_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/codex-desktop"
 APP_PID_FILE="$APP_STATE_DIR/app.pid"
 PACKAGED_RUNTIME_HELPER="$SCRIPT_DIR/.codex-linux/codex-packaged-runtime.sh"
+APP_NOTIFICATION_ICON_NAME="codex-desktop"
+APP_NOTIFICATION_ICON_BUNDLE="$SCRIPT_DIR/.codex-linux/$APP_NOTIFICATION_ICON_NAME.png"
+APP_NOTIFICATION_ICON_SYSTEM="/usr/share/icons/hicolor/256x256/apps/$APP_NOTIFICATION_ICON_NAME.png"
+APP_NOTIFICATION_ICON_REPO="$SCRIPT_DIR/../assets/codex.png"
 
 mkdir -p "$LOG_DIR" "$APP_STATE_DIR"
 
@@ -383,6 +388,39 @@ export_packaged_runtime_env() {
     fi
 }
 
+run_cli_preflight() {
+    if ! command -v codex-update-manager >/dev/null 2>&1; then
+        return 0
+    fi
+
+    local refreshed_path=""
+    if ! refreshed_path="$(codex-update-manager cli-preflight --cli-path "$CODEX_CLI_PATH" --print-path)"; then
+        notify_error "Codex CLI is outdated or broken and the automatic prelaunch update failed. Check the launcher and updater logs."
+        exit 1
+    fi
+
+    if [ -n "$refreshed_path" ]; then
+        CODEX_CLI_PATH="$refreshed_path"
+        export CODEX_CLI_PATH
+    fi
+}
+
+resolve_notification_icon() {
+    local candidate
+    for candidate in \
+        "$APP_NOTIFICATION_ICON_BUNDLE" \
+        "$APP_NOTIFICATION_ICON_SYSTEM" \
+        "$APP_NOTIFICATION_ICON_REPO"
+    do
+        if [ -f "$candidate" ]; then
+            echo "$candidate"
+            return 0
+        fi
+    done
+
+    echo "$APP_NOTIFICATION_ICON_NAME"
+}
+
 find_codex_cli() {
     if command -v codex >/dev/null 2>&1; then
         command -v codex
@@ -419,9 +457,16 @@ find_codex_cli() {
 
 notify_error() {
     local message="$1"
+    local icon
+    icon="$(resolve_notification_icon)"
     echo "$message"
     if command -v notify-send >/dev/null 2>&1; then
-        notify-send "Codex Desktop" "$message"
+        notify-send \
+            -a "Codex Desktop" \
+            -i "$icon" \
+            -h "string:desktop-entry:codex-desktop" \
+            "Codex Desktop" \
+            "$message"
     fi
 }
 
@@ -486,6 +531,8 @@ if [ -z "$CODEX_CLI_PATH" ]; then
     exit 1
 fi
 
+run_cli_preflight
+
 export_packaged_runtime_env
 
 echo "Using CODEX_CLI_PATH=$CODEX_CLI_PATH"
@@ -504,6 +551,12 @@ exec "$SCRIPT_DIR/electron" \
 SCRIPT
 
     chmod +x "$INSTALL_DIR/start.sh"
+    mkdir -p "$INSTALL_DIR/.codex-linux"
+    if [ -f "$ICON_SOURCE" ]; then
+        cp "$ICON_SOURCE" "$INSTALL_DIR/.codex-linux/codex-desktop.png"
+    else
+        warn "Notification icon not found at $ICON_SOURCE"
+    fi
     info "Start script created"
 }
 

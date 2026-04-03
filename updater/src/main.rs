@@ -3,6 +3,7 @@
 mod app;
 mod builder;
 mod cli;
+mod codex_cli;
 mod config;
 mod install;
 mod liveness;

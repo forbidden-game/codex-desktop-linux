@@ -21,8 +21,7 @@ const REQUIRED_BUNDLE_FILES: [(&str, &str); 6] = [
         "scripts/patch-linux-window-ui.js",
         "scripts/patch-linux-window-ui.js",
     ),
-    (
-        "scripts/lib/package-common.sh",
+    ("scripts/lib/package-common.sh",
         "scripts/lib/package-common.sh",
     ),
     ("packaging/linux", "packaging/linux"),
@@ -246,6 +245,7 @@ fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Find a native package file inside `dist_dir`.
 fn find_package_in(dist_dir: &Path) -> Result<PathBuf> {
     for entry in
         fs::read_dir(dist_dir).with_context(|| format!("Failed to read {}", dist_dir.display()))?

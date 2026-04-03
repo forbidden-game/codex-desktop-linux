@@ -78,6 +78,8 @@ Do not assume `codex-app/` is pristine. If behavior differs from `install.sh`, p
   `7z` can return a non-zero status for the `/Applications` symlink inside the DMG. This is currently treated as a warning if a `.app` bundle was still extracted successfully.
 - Launcher and `nvm`:
   GUI launchers often do not inherit the user's shell `PATH`. The generated `start.sh` explicitly searches for `codex`, including common `nvm` locations.
+- CLI preflight:
+  Before Electron launches, the generated launcher asks `codex-update-manager` to verify the installed Codex CLI and update it if the npm package is newer. If that preflight fails, the launcher exits instead of continuing into a hung Electron session.
 - Launcher logging:
   The generated launcher logs to:
   `~/.cache/codex-desktop/launcher.log`
@@ -99,12 +101,14 @@ Do not assume `codex-app/` is pristine. If behavior differs from `install.sh`, p
   The updater runs unprivileged. It only escalates at install time via `pkexec /usr/bin/codex-update-manager install-deb --path <deb>`, `install-rpm --path <rpm>`, or `install-pacman --path <pkg.tar.zst>`.
 - Failed privileged installs:
   A failed or cancelled `pkexec` install now stays in `Failed` and does not auto-retry every reconcile cycle. Check `service.log`, fix the root cause, and retry by waiting for the next rebuild or rebuilding a newer package.
+- Interrupted installs:
+  If updater state is left in `Installing` after a crash, restart, or interrupted privileged flow, the daemon now recovers that state automatically instead of staying stuck and skipping future upstream checks.
 - Package removal:
   Debian and RPM removal now make a best-effort attempt to stop and disable `codex-update-manager.service` for active user sessions. If a user manager is unavailable, manual cleanup is still `systemctl --user disable --now codex-update-manager.service`.
 
 ## Crate Versioning
 
-- Current updater crate version: `0.2.1`
+- Current updater crate version: `0.3.0`
 - Bump `patch` for fixes, docs, and maintenance-only updates.
 - Bump `minor` for compatible feature additions.
 - Bump `major` for incompatible CLI, persisted-state, or install-flow changes.
