@@ -40,7 +40,6 @@ help:
 	@printf '  %s\n' "make deb PACKAGE_VERSION=2026.03.24.220723+88f07cd3"
 	@printf '  %s\n' "make rpm PACKAGE_VERSION=2026.03.24.220723+88f07cd3"
 	@printf '  %s\n' "make pacman PACKAGE_VERSION=2026.03.24.220723+88f07cd3"
-	@printf '  %s\n\n' "make install"
 	@printf '  %s\n' "make install"
 	@printf '  %s\n\n' "make service-enable"
 
