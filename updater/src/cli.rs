@@ -16,6 +16,12 @@ pub struct Cli {
 pub enum Commands {
     Daemon,
     CheckNow,
+    CliPreflight {
+        #[arg(long)]
+        cli_path: Option<PathBuf>,
+        #[arg(long)]
+        print_path: bool,
+    },
     Status {
         #[arg(long)]
         json: bool,

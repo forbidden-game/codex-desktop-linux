@@ -246,6 +246,7 @@ fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Find a native package file inside `dist_dir`.
 fn find_package_in(dist_dir: &Path) -> Result<PathBuf> {
     for entry in
         fs::read_dir(dist_dir).with_context(|| format!("Failed to read {}", dist_dir.display()))?
