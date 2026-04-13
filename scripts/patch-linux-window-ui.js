@@ -154,7 +154,7 @@ const windowOptionsReplacement =
 
 if (source.includes(windowOptionsNeedle)) {
   source = source.replace(windowOptionsNeedle, windowOptionsReplacement);
-} else if (!source.includes(iconPathNeedle) && !source.includes(iconPathNeedle)) {
+} else if (!source.includes(iconPathNeedle)) {
   console.warn("WARN: Could not find BrowserWindow autoHideMenuBar snippet — skipping window options patch");
 }
 
