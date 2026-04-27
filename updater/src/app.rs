@@ -11,8 +11,13 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use chrono::Utc;
+use fs4::fs_std::FileExt;
 use reqwest::Client;
-use std::path::Path;
+use std::{
+    fs::{self, OpenOptions},
+    io::{Seek, SeekFrom, Write},
+    path::Path,
+};
 use tokio::time::{self, Duration};
 use tracing::{error, info, warn};
 
@@ -103,6 +108,48 @@ fn summarize_command_output(output: &[u8]) -> Option<String> {
     let mut lines = text.lines().rev().take(3).collect::<Vec<_>>();
     lines.reverse();
     Some(lines.join(" | "))
+}
+
+struct CheckLock {
+    _file: fs::File,
+}
+
+fn try_acquire_check_lock(paths: &RuntimePaths) -> Result<Option<CheckLock>> {
+    let lock_path = paths.state_dir.join("check.lock");
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .with_context(|| format!("Failed to open {}", lock_path.display()))?;
+
+    match file.try_lock_exclusive() {
+        Ok(true) => {}
+        Ok(false) => {
+            info!("skipping upstream check because another check is already active");
+            return Ok(None);
+        }
+        Err(error) => {
+            return Err(error).with_context(|| format!("Failed to lock {}", lock_path.display()));
+        }
+    }
+
+    file.set_len(0)
+        .with_context(|| format!("Failed to truncate {}", lock_path.display()))?;
+    file.seek(SeekFrom::Start(0))
+        .with_context(|| format!("Failed to seek {}", lock_path.display()))?;
+    writeln!(file, "{}", std::process::id())
+        .with_context(|| format!("Failed to write {}", lock_path.display()))?;
+
+    Ok(Some(CheckLock { _file: file }))
+}
+
+fn update_install_is_pending(status: &UpdateStatus) -> bool {
+    matches!(
+        status,
+        UpdateStatus::ReadyToInstall | UpdateStatus::WaitingForAppExit | UpdateStatus::Installing
+    )
 }
 
 async fn run_daemon(
@@ -223,13 +270,14 @@ async fn run_check_cycle(
 ) -> Result<()> {
     let retrying_failed_update = state.status == UpdateStatus::Failed;
 
-    if matches!(
-        state.status,
-        UpdateStatus::ReadyToInstall | UpdateStatus::WaitingForAppExit | UpdateStatus::Installing
-    ) {
+    if update_install_is_pending(&state.status) {
         info!("skipping upstream check because an update is already pending");
         return Ok(());
     }
+
+    let Some(_check_lock) = try_acquire_check_lock(paths)? else {
+        return Ok(());
+    };
 
     let client = Client::builder().build()?;
 
@@ -429,10 +477,14 @@ fn compare_generated_versions(left: &str, right: &str) -> Option<std::cmp::Order
 }
 
 fn parse_generated_version(version: &str) -> Option<Vec<u32>> {
-    let base = version
+    let without_metadata = version
         .split_once('+')
         .map(|(prefix, _)| prefix)
         .unwrap_or(version);
+    let base = without_metadata
+        .split_once('-')
+        .map(|(prefix, _)| prefix)
+        .unwrap_or(without_metadata);
     let mut parts = Vec::new();
     for segment in base.split('.') {
         parts.push(segment.parse::<u32>().ok()?);
@@ -634,13 +686,71 @@ mod tests {
             app_executable_path: temp.path().join("not-running-electron"),
         };
 
-        let mut state = PersistedState::new(true);
-        state.status = UpdateStatus::ReadyToInstall;
+        for status in [
+            UpdateStatus::ReadyToInstall,
+            UpdateStatus::WaitingForAppExit,
+            UpdateStatus::Installing,
+        ] {
+            let mut state = PersistedState::new(true);
+            state.status = status.clone();
 
-        run_check_cycle(&config, &mut state, &paths).await?;
+            run_check_cycle(&config, &mut state, &paths).await?;
 
-        assert_eq!(state.status, UpdateStatus::ReadyToInstall);
-        assert_eq!(state.last_check_at, None);
+            assert_eq!(state.status, status);
+            assert_eq!(state.last_check_at, None);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn check_lock_file_without_kernel_lock_does_not_block_acquire() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let paths = RuntimePaths {
+            config_file: temp.path().join("config/config.toml"),
+            state_file: temp.path().join("state/state.json"),
+            log_file: temp.path().join("state/service.log"),
+            cache_dir: temp.path().join("cache"),
+            state_dir: temp.path().join("state"),
+            config_dir: temp.path().join("config"),
+        };
+        paths.ensure_dirs()?;
+        let lock_path = paths.state_dir.join("check.lock");
+        std::fs::write(&lock_path, b"stale-pid")?;
+
+        let lock = try_acquire_check_lock(&paths)?;
+
+        assert!(lock.is_some());
+        assert_eq!(
+            std::fs::read_to_string(&lock_path)?.trim(),
+            std::process::id().to_string()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn held_check_lock_blocks_second_acquire_until_drop() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let paths = RuntimePaths {
+            config_file: temp.path().join("config/config.toml"),
+            state_file: temp.path().join("state/state.json"),
+            log_file: temp.path().join("state/service.log"),
+            cache_dir: temp.path().join("cache"),
+            state_dir: temp.path().join("state"),
+            config_dir: temp.path().join("config"),
+        };
+        paths.ensure_dirs()?;
+
+        let first_lock = try_acquire_check_lock(&paths)?;
+        let second_lock = try_acquire_check_lock(&paths)?;
+
+        assert!(first_lock.is_some());
+        assert!(second_lock.is_none());
+
+        drop(first_lock);
+        let reacquired_lock = try_acquire_check_lock(&paths)?;
+
+        assert!(reacquired_lock.is_some());
         Ok(())
     }
 
@@ -732,6 +842,17 @@ mod tests {
         assert_eq!(
             compare_generated_versions("2026.04.01.035152", "2026.03.27.025604+1086e799"),
             Some(std::cmp::Ordering::Greater)
+        );
+    }
+
+    #[test]
+    fn generated_versions_ignore_package_release_suffixes() {
+        assert_eq!(
+            compare_generated_versions(
+                "2026.04.25.054929-90dd7716x11.fc43",
+                "2026.04.25.054929+90dd7716",
+            ),
+            Some(std::cmp::Ordering::Equal)
         );
     }
 
