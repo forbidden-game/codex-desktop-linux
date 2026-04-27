@@ -11,11 +11,12 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use chrono::Utc;
+use fs4::fs_std::FileExt;
 use reqwest::Client;
 use std::{
     fs::{self, OpenOptions},
-    io::Write,
-    path::{Path, PathBuf},
+    io::{Seek, SeekFrom, Write},
+    path::Path,
 };
 use tokio::time::{self, Duration};
 use tracing::{error, info, warn};
@@ -110,39 +111,38 @@ fn summarize_command_output(output: &[u8]) -> Option<String> {
 }
 
 struct CheckLock {
-    path: PathBuf,
-}
-
-impl Drop for CheckLock {
-    fn drop(&mut self) {
-        if let Err(error) = fs::remove_file(&self.path) {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                warn!(?error, path = %self.path.display(), "failed to remove check lock");
-            }
-        }
-    }
+    _file: fs::File,
 }
 
 fn try_acquire_check_lock(paths: &RuntimePaths) -> Result<Option<CheckLock>> {
     let lock_path = paths.state_dir.join("check.lock");
-    match OpenOptions::new()
+    let mut file = OpenOptions::new()
+        .read(true)
         .write(true)
-        .create_new(true)
+        .create(true)
+        .truncate(false)
         .open(&lock_path)
-    {
-        Ok(mut file) => {
-            writeln!(file, "{}", std::process::id())
-                .with_context(|| format!("Failed to write {}", lock_path.display()))?;
-            Ok(Some(CheckLock { path: lock_path }))
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+        .with_context(|| format!("Failed to open {}", lock_path.display()))?;
+
+    match file.try_lock_exclusive() {
+        Ok(true) => {}
+        Ok(false) => {
             info!("skipping upstream check because another check is already active");
-            Ok(None)
+            return Ok(None);
         }
         Err(error) => {
-            Err(error).with_context(|| format!("Failed to create {}", lock_path.display()))
+            return Err(error).with_context(|| format!("Failed to lock {}", lock_path.display()));
         }
     }
+
+    file.set_len(0)
+        .with_context(|| format!("Failed to truncate {}", lock_path.display()))?;
+    file.seek(SeekFrom::Start(0))
+        .with_context(|| format!("Failed to seek {}", lock_path.display()))?;
+    writeln!(file, "{}", std::process::id())
+        .with_context(|| format!("Failed to write {}", lock_path.display()))?;
+
+    Ok(Some(CheckLock { _file: file }))
 }
 
 fn update_install_is_pending(status: &UpdateStatus) -> bool {
@@ -703,8 +703,8 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn run_check_cycle_skips_when_check_lock_exists() -> Result<()> {
+    #[test]
+    fn check_lock_file_without_kernel_lock_does_not_block_acquire() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let paths = RuntimePaths {
             config_file: temp.path().join("config/config.toml"),
@@ -715,25 +715,42 @@ mod tests {
             config_dir: temp.path().join("config"),
         };
         paths.ensure_dirs()?;
-        std::fs::write(paths.state_dir.join("check.lock"), b"12345")?;
+        let lock_path = paths.state_dir.join("check.lock");
+        std::fs::write(&lock_path, b"stale-pid")?;
 
-        let config = RuntimeConfig {
-            dmg_url: "https://invalid.example/Codex.dmg".to_string(),
-            initial_check_delay_seconds: 1,
-            check_interval_hours: 6,
-            auto_install_on_app_exit: true,
-            notifications: false,
-            workspace_root: temp.path().join("cache"),
-            builder_bundle_root: temp.path().join("builder"),
-            app_executable_path: temp.path().join("not-running-electron"),
+        let lock = try_acquire_check_lock(&paths)?;
+
+        assert!(lock.is_some());
+        assert_eq!(
+            std::fs::read_to_string(&lock_path)?.trim(),
+            std::process::id().to_string()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn held_check_lock_blocks_second_acquire_until_drop() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let paths = RuntimePaths {
+            config_file: temp.path().join("config/config.toml"),
+            state_file: temp.path().join("state/state.json"),
+            log_file: temp.path().join("state/service.log"),
+            cache_dir: temp.path().join("cache"),
+            state_dir: temp.path().join("state"),
+            config_dir: temp.path().join("config"),
         };
+        paths.ensure_dirs()?;
 
-        let mut state = PersistedState::new(true);
+        let first_lock = try_acquire_check_lock(&paths)?;
+        let second_lock = try_acquire_check_lock(&paths)?;
 
-        run_check_cycle(&config, &mut state, &paths).await?;
+        assert!(first_lock.is_some());
+        assert!(second_lock.is_none());
 
-        assert_eq!(state.status, UpdateStatus::Idle);
-        assert_eq!(state.last_check_at, None);
+        drop(first_lock);
+        let reacquired_lock = try_acquire_check_lock(&paths)?;
+
+        assert!(reacquired_lock.is_some());
         Ok(())
     }
 
