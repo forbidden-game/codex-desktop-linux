@@ -111,6 +111,97 @@ function applyLinuxOpaqueWindowsDefaultPatch(currentSource) {
   return patchedSource;
 }
 
+function applyCodexServiceTierConfigFallbackPatch(currentSource) {
+  let patchedSource = currentSource;
+
+  const localConversationNeedle =
+    "agentMode:a,model:null,serviceTier:o,reasoningEffort:null,collaborationMode:s,config:Rr(f),";
+  const localConversationPatch =
+    "agentMode:a,model:null,serviceTier:o??f?.service_tier??void 0,reasoningEffort:null,collaborationMode:s,config:Rr(f),";
+  if (patchedSource.includes("serviceTier:o??f?.service_tier??void 0")) {
+    // Already patched.
+  } else if (patchedSource.includes(localConversationNeedle)) {
+    patchedSource = patchedSource.replace(localConversationNeedle, localConversationPatch);
+  }
+
+  const realtimeConversationNeedle =
+    "workspaceKind:u?`projectless`:`project`,collaborationMode:e,serviceTier:o,permissions:m,";
+  const realtimeConversationPatch =
+    "workspaceKind:u?`projectless`:`project`,collaborationMode:e,serviceTier:o??p?.service_tier??void 0,permissions:m,";
+  if (patchedSource.includes("serviceTier:o??p?.service_tier??void 0")) {
+    // Already patched.
+  } else if (patchedSource.includes(realtimeConversationNeedle)) {
+    patchedSource = patchedSource.replace(realtimeConversationNeedle, realtimeConversationPatch);
+  }
+
+  const threadStartNeedle = "...o===void 0?{}:{serviceTier:o},permissions:m,";
+  const threadStartPatch =
+    "...o==null&&n?.service_tier==null?{}:{serviceTier:o??n?.service_tier},permissions:m,";
+  if (patchedSource.includes("o==null&&n?.service_tier==null")) {
+    // Already patched.
+  } else if (patchedSource.includes(threadStartNeedle)) {
+    patchedSource = patchedSource.replace(threadStartNeedle, threadStartPatch);
+  }
+
+  const suggestionStartNeedle =
+    "agentMode:i,model:null,serviceTier:o,reasoningEffort:null,collaborationMode:a,config:_";
+  const suggestionStartPatch =
+    "agentMode:i,model:null,serviceTier:o??_?.service_tier??void 0,reasoningEffort:null,collaborationMode:a,config:_";
+  if (patchedSource.includes("serviceTier:o??_?.service_tier??void 0")) {
+    // Already patched.
+  } else if (patchedSource.includes(suggestionStartNeedle)) {
+    patchedSource = patchedSource.replace(suggestionStartNeedle, suggestionStartPatch);
+  }
+
+  const suggestionContinueNeedle =
+    "conversationId:t,model:null,serviceTier:o,reasoningEffort:a.settings.reasoning_effort,";
+  const suggestionContinuePatch =
+    "conversationId:t,model:null,serviceTier:o??void 0,reasoningEffort:a.settings.reasoning_effort,";
+  if (patchedSource.includes("conversationId:t,model:null,serviceTier:o??void 0")) {
+    // Already patched.
+  } else if (patchedSource.includes(suggestionContinueNeedle)) {
+    patchedSource = patchedSource.replace(suggestionContinueNeedle, suggestionContinuePatch);
+  }
+
+  const suggestionTurnNeedle =
+    "approvalsReviewer:r.approvalsReviewer,sandboxPolicy:r.sandboxPolicy,serviceTier:o,effort:null,";
+  const suggestionTurnPatch =
+    "approvalsReviewer:r.approvalsReviewer,sandboxPolicy:r.sandboxPolicy,serviceTier:o??void 0,effort:null,";
+  if (patchedSource.includes("sandboxPolicy:r.sandboxPolicy,serviceTier:o??void 0")) {
+    // Already patched.
+  } else if (patchedSource.includes(suggestionTurnNeedle)) {
+    patchedSource = patchedSource.replace(suggestionTurnNeedle, suggestionTurnPatch);
+  }
+
+  return patchedSource;
+}
+
+function applyCodexServiceTierManagerConfigFallbackPatch(currentSource) {
+  let patchedSource = currentSource;
+
+  const buildParamsNeedle =
+    "async buildNewConversationParams(e,t,n,r,i,a){let o=await he(e,this.getEffectiveServiceTier(t),";
+  const buildParamsPatch =
+    "async buildNewConversationParams(e,t,n,r,i,a){let __codexBuildConfig=t==null?await Qf(this.requestClient,n):null,o=await he(e,this.getEffectiveServiceTier(t??__codexBuildConfig?.service_tier),";
+  if (patchedSource.includes("__codexBuildConfig=t==null?await Qf(this.requestClient,n):null")) {
+    // Already patched.
+  } else if (patchedSource.includes(buildParamsNeedle)) {
+    patchedSource = patchedSource.replace(buildParamsNeedle, buildParamsPatch);
+  }
+
+  const turnStartNeedle =
+    "ee=e.getPersonality(),te=s.serviceTier===void 0?e.getEffectiveServiceTier(Lc()):e.getEffectiveServiceTier(s.serviceTier),k={";
+  const turnStartPatch =
+    "ee=e.getPersonality(),__codexTurnConfig=s.serviceTier==null?await Qf(e.requestClient,E):null,te=s.serviceTier==null?e.getEffectiveServiceTier(Lc()??__codexTurnConfig?.service_tier):e.getEffectiveServiceTier(s.serviceTier),k={";
+  if (patchedSource.includes("__codexTurnConfig=s.serviceTier==null?await Qf(e.requestClient,E):null")) {
+    // Already patched.
+  } else if (patchedSource.includes(turnStartNeedle)) {
+    patchedSource = patchedSource.replace(turnStartNeedle, turnStartPatch);
+  }
+
+  return patchedSource;
+}
+
 function requireName(source, moduleName) {
   const escaped = moduleName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = source.match(new RegExp(`([A-Za-z_$][\\w$]*)=require\\(\`${escaped}\`\\)`));
@@ -550,6 +641,26 @@ function patchExtractedApp(extractedDir) {
       "assets",
     )} — skipping translucent sidebar default patch`,
   );
+  patchAssetFiles(
+    extractedDir,
+    /^index-.*\.js$/,
+    applyCodexServiceTierConfigFallbackPatch,
+    `WARN: Could not find webview index bundle in ${path.join(
+      extractedDir,
+      "webview",
+      "assets",
+    )} — skipping service tier config fallback patch`,
+  );
+  patchAssetFiles(
+    extractedDir,
+    /^app-server-manager-signals-.*\.js$/,
+    applyCodexServiceTierManagerConfigFallbackPatch,
+    `WARN: Could not find app server manager bundle in ${path.join(
+      extractedDir,
+      "webview",
+      "assets",
+    )} — skipping service tier manager config fallback patch`,
+  );
 
   const desktopName = patchPackageJson(extractedDir);
   console.log("Patched Linux window, shell, and appearance behavior:", {
@@ -576,6 +687,8 @@ if (require.main === module) {
 }
 
 module.exports = {
+  applyCodexServiceTierConfigFallbackPatch,
+  applyCodexServiceTierManagerConfigFallbackPatch,
   applyLinuxFileManagerPatch,
   applyLinuxMenuPatch,
   applyLinuxOpaqueBackgroundPatch,
