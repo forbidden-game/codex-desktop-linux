@@ -94,7 +94,7 @@ Do not assume `codex-app/` is pristine. If behavior differs from `install.sh`, p
 - Webview server:
   The launcher starts a local `python3 -m http.server 5175` from `content/webview/`, waits for port `5175` to become reachable, verifies that `http://127.0.0.1:5175/index.html` serves the expected Codex startup markers, and only then launches Electron because the extracted app expects local webview assets there.
 - Wayland/GPU compatibility:
-  The generated launcher enables `--ozone-platform-hint=auto`, `--disable-gpu-sandbox`, and `--enable-features=WaylandWindowDecorations` by default. Keep these in mind when debugging Pop!_OS, Wayland, or Nvidia-specific rendering issues.
+  The generated launcher defaults to `--ozone-platform=x11` on GNOME Wayland so Fcitx candidate windows track the cursor more reliably. Other sessions use `--ozone-platform-hint=auto`, `--enable-wayland-ime`, and `--wayland-text-input-version=3`. Users can override this with `CODEX_DESKTOP_OZONE_PLATFORM=x11|wayland|auto`. The launcher also enables `--disable-gpu-sandbox`, `--disable-gpu-compositing`, and `--enable-features=WaylandWindowDecorations`; keep these in mind when debugging Pop!_OS, Wayland, or Nvidia-specific rendering issues.
 - Webview server roadmap:
   Review `docs/webview-server-evaluation.md` before changing the local server model; that document captures the current recommendation, risks, and acceptance criteria.
 - Closing behavior:

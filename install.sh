@@ -373,7 +373,14 @@ Options:
   -h, --help                  Show this help message and exit
   --disable-gpu               Completely disable GPU acceleration
   --disable-gpu-compositing   Disable GPU compositing (fixes flickering)
+  --enable-wayland-ime        Enable Wayland IME candidate positioning
+  --wayland-text-input-version=3
+                               Prefer the GNOME/Fcitx-friendly Wayland text-input protocol
   --ozone-platform=x11        Force X11 instead of Wayland
+
+Environment:
+  CODEX_DESKTOP_OZONE_PLATFORM=x11|wayland|auto
+                               Override display backend; defaults to x11 on GNOME Wayland
 
 Extra flags are passed directly to Electron.
 
@@ -402,6 +409,62 @@ log_phase() {
     local elapsed_ms
     elapsed_ms="$(($(now_ms) - LAUNCHER_START_MS))"
     echo "[$(date -Is)] launcher_phase=$phase elapsedMs=$elapsed_ms"
+}
+
+is_gnome_wayland_session() {
+    [ "${XDG_SESSION_TYPE:-}" = "wayland" ] || return 1
+
+    case ":${XDG_CURRENT_DESKTOP:-}:${DESKTOP_SESSION:-}:" in
+        *GNOME*|*gnome*|*:ubuntu:*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+ELECTRON_OZONE_FLAGS=()
+
+resolve_electron_ozone_flags() {
+    local backend="${CODEX_DESKTOP_OZONE_PLATFORM:-}"
+    ELECTRON_OZONE_FLAGS=()
+
+    if [ -z "$backend" ]; then
+        if is_gnome_wayland_session; then
+            backend="x11"
+        else
+            backend="auto"
+        fi
+    fi
+
+    case "$backend" in
+        x11)
+            ELECTRON_OZONE_FLAGS+=(--ozone-platform=x11)
+            ;;
+        wayland)
+            ELECTRON_OZONE_FLAGS+=(
+                --ozone-platform=wayland
+                --enable-wayland-ime
+                --wayland-text-input-version=3
+            )
+            ;;
+        auto)
+            ELECTRON_OZONE_FLAGS+=(
+                --ozone-platform-hint=auto
+                --enable-wayland-ime
+                --wayland-text-input-version=3
+            )
+            ;;
+        *)
+            echo "Ignoring unsupported CODEX_DESKTOP_OZONE_PLATFORM=$backend"
+            ELECTRON_OZONE_FLAGS+=(
+                --ozone-platform-hint=auto
+                --enable-wayland-ime
+                --wayland-text-input-version=3
+            )
+            ;;
+    esac
 }
 
 load_packaged_runtime_helper() {
@@ -816,13 +879,14 @@ cleanup_launcher() {
 launch_electron() {
     cd "$SCRIPT_DIR"
     log_phase "electron_launch"
+    resolve_electron_ozone_flags
 
     if [ "$WARM_START" -eq 1 ]; then
         "$SCRIPT_DIR/electron" \
             --no-sandbox \
             --class=codex-desktop \
             --app-id=codex-desktop \
-            --ozone-platform-hint=auto \
+            "${ELECTRON_OZONE_FLAGS[@]}" \
             --disable-gpu-sandbox \
             --disable-gpu-compositing \
             --enable-features=WaylandWindowDecorations \
@@ -834,7 +898,7 @@ launch_electron() {
         --no-sandbox \
         --class=codex-desktop \
         --app-id=codex-desktop \
-        --ozone-platform-hint=auto \
+        "${ELECTRON_OZONE_FLAGS[@]}" \
         --disable-gpu-sandbox \
         --disable-gpu-compositing \
         --enable-features=WaylandWindowDecorations \

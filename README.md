@@ -435,7 +435,8 @@ The current evaluation for a future Rust replacement for the local webview serve
 | Stuck on the Codex logo splash | Check `~/.cache/codex-desktop/launcher.log`. If webview origin validation failed, another process is probably serving port `5175` or the extracted `content/webview/` bundle is incomplete |
 | `CODEX_CLI_PATH` error | Install the CLI with `npm i -g @openai/codex` or `npm i -g --prefix ~/.local @openai/codex` |
 | Electron hangs while the CLI is outdated | Re-run the launcher and check `~/.cache/codex-desktop/launcher.log` plus `~/.local/state/codex-update-manager/service.log`; the launcher now runs a best-effort CLI preflight and warns if the automatic refresh fails |
-| GPU/Vulkan/Wayland errors | The launcher sets `--ozone-platform-hint=auto`, `--disable-gpu-sandbox`, `--disable-gpu-compositing`, and `--enable-features=WaylandWindowDecorations` by default. If you need X11 explicitly, try `./codex-app/start.sh --ozone-platform=x11` |
+| GPU/Vulkan/Wayland errors | The launcher defaults to X11 on GNOME Wayland for more reliable Fcitx candidate positioning, and otherwise uses `--ozone-platform-hint=auto` with Wayland IME enabled. Override with `CODEX_DESKTOP_OZONE_PLATFORM=x11|wayland|auto ./codex-app/start.sh` |
+| Fcitx candidate window is offset from the cursor | Restart the app after updating. On GNOME Wayland the launcher should start Electron with `--ozone-platform=x11`; use `ps -eo pid,args \| grep /opt/codex-desktop/electron` to confirm |
 | Window flickering | GPU compositing is now disabled by default (`--disable-gpu-compositing`). If flickering persists, try `./codex-app/start.sh --disable-gpu` to fully disable GPU acceleration |
 | Sandbox errors | The launcher already sets `--no-sandbox` |
 | Stale install / cached DMG | Run `./install.sh --fresh` to remove the existing install dir and re-download the DMG |
